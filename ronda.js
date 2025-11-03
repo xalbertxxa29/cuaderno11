@@ -592,20 +592,66 @@ async function queueUpload(docId, path, blob){
 const offlineIndicator = document.getElementById('offline-indicator');
 const syncIndicator = document.getElementById('sync-indicator');
 
+// Verificación periódica de conexión (para WebView que no dispara evento 'online')
+let lastOnlineState = navigator.onLine;
+setInterval(() => {
+  const currentOnlineState = navigator.onLine;
+  
+  // Detectar cambio de offline a online
+  if (!lastOnlineState && currentOnlineState) {
+    console.log('🌐 Cambio detectado: Pasó de OFFLINE a ONLINE');
+    lastOnlineState = true;
+    
+    // Disparar sincronización
+    if (offlineIndicator) offlineIndicator.style.display = 'none';
+    if (syncIndicator) syncIndicator.style.display = 'block';
+    showToast('Conexión recuperada. Sincronizando...', 'success');
+    
+    (async () => {
+      try {
+        console.log('Paso 1: Sincronizando registros offline...');
+        await syncOfflineRecords();
+        console.log('Paso 1 completado');
+        
+        if (photoQueue) {
+          console.log('Paso 2: Sincronizando fotos...');
+          await photoQueue.syncQueue();
+          console.log('Paso 2 completado');
+        }
+        
+        if (syncIndicator) syncIndicator.style.display = 'none';
+        showToast('✅ Sincronización completada.', 'success');
+        console.log('✅ Toda la sincronización completada');
+      } catch (e) {
+        console.error('Error durante sincronización:', e);
+        if (syncIndicator) syncIndicator.style.display = 'none';
+        showToast('Error en sincronización. Reintentando...', 'error');
+      }
+    })();
+  } 
+  // Detectar cambio de online a offline
+  else if (lastOnlineState && !currentOnlineState) {
+    console.log('🔌 Cambio detectado: Pasó de ONLINE a OFFLINE');
+    lastOnlineState = false;
+    if (offlineIndicator) offlineIndicator.style.display = 'block';
+    showToast('Sin conexión. Trabajando offline.', 'offline');
+  }
+}, 2000); // Verificar cada 2 segundos
+
+// También escuchar eventos nativos (para navegadores de escritorio)
 window.addEventListener('online', async () => {
-  console.log('🌐 Conexión recuperada - Iniciando sincronización...');
+  console.log('🌐 Evento "online" detectado (navegador)');
+  lastOnlineState = true;
   if (offlineIndicator) offlineIndicator.style.display = 'none';
   
   if (syncIndicator) syncIndicator.style.display = 'block';
   showToast('Conexión recuperada. Sincronizando...', 'success');
   
   try {
-    // Primero sincronizar registros
     console.log('Paso 1: Sincronizando registros offline...');
     await syncOfflineRecords();
     console.log('Paso 1 completado');
     
-    // Luego sincronizar fotos
     if (photoQueue) {
       console.log('Paso 2: Sincronizando fotos...');
       await photoQueue.syncQueue();
