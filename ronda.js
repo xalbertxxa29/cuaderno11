@@ -984,36 +984,56 @@ if (auth) {
     usuarioLogueado = user.email ? user.email.split('@')[0] : user.uid;
     console.log('Usuario logueado:', usuarioLogueado);
     
+    const nombreField = document.getElementById('agent-name-con-novedad');
+    let nombreCompleto = usuarioLogueado; // fallback
+    
     // Cargar el nombre completo desde Firestore
     try {
       const userDoc = await db.collection('USUARIOS').doc(usuarioLogueado).get();
       if (userDoc.exists) {
         const userData = userDoc.data();
-        const nombreCompleto = `${userData.NOMBRES || ''} ${userData.APELLIDOS || ''}`.trim();
-        // Mostrar el nombre en el formulario
-        const nombreField = document.getElementById('agent-name-con-novedad');
-        if (nombreField) {
-          nombreField.value = nombreCompleto;
-          nombreField.disabled = true; // No editable
+        nombreCompleto = `${userData.NOMBRES || ''} ${userData.APELLIDOS || ''}`.trim();
+        console.log('✓ Nombre del usuario cargado desde Firestore:', nombreCompleto);
+        
+        // 💾 Guardar en offline storage para acceso futuro sin internet
+        if (typeof offlineStorage !== 'undefined') {
+          await offlineStorage.setUserData({
+            email: user.email,
+            userId: usuarioLogueado,
+            nombres: userData.NOMBRES || '',
+            apellidos: userData.APELLIDOS || '',
+            cliente: userData.CLIENTE || '',
+            unidad: userData.UNIDAD || '',
+            puesto: userData.PUESTO || ''
+          }).catch(e => console.warn('Error guardando en offlineStorage:', e));
         }
-        console.log('Nombre del usuario:', nombreCompleto);
       } else {
-        console.warn('Documento de usuario no existe:', usuarioLogueado);
-        // Usar el email del usuario como fallback
-        const nombreField = document.getElementById('agent-name-con-novedad');
-        if (nombreField) {
-          nombreField.value = usuarioLogueado;
-          nombreField.disabled = true;
+        console.warn('Documento de usuario no existe en Firestore:', usuarioLogueado);
+      }
+    } catch (firestoreError) {
+      console.warn('Error cargando de Firestore (probablemente sin internet):', firestoreError?.message);
+      
+      // FALLBACK: Intentar cargar del cache offline
+      if (typeof offlineStorage !== 'undefined') {
+        try {
+          const cachedUser = await offlineStorage.getUserData();
+          if (cachedUser && cachedUser.userId === usuarioLogueado) {
+            nombreCompleto = `${cachedUser.nombres} ${cachedUser.apellidos}`.trim();
+            console.log('✓ Nombre del usuario cargado desde cache offline:', nombreCompleto);
+          } else if (cachedUser) {
+            console.log('Usuario en cache es diferente - limpiando...');
+            await offlineStorage.clearAll();
+          }
+        } catch (cacheError) {
+          console.warn('Error cargando cache offline:', cacheError?.message);
         }
       }
-    } catch (e) {
-      console.warn('No se pudo cargar el nombre del usuario desde Firestore:', e?.message);
-      // FALLBACK: Usar el email del usuario cuando está offline o falla Firestore
-      const nombreField = document.getElementById('agent-name-con-novedad');
-      if (nombreField) {
-        nombreField.value = usuarioLogueado;
-        nombreField.disabled = true;
-      }
+    }
+    
+    // Mostrar el nombre en el formulario
+    if (nombreField) {
+      nombreField.value = nombreCompleto;
+      nombreField.disabled = true; // No editable
     }
     
     // Iniciar la UI solo después de autenticar

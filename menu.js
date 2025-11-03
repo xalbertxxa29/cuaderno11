@@ -29,30 +29,63 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     try {
       const userId = user.email.split("@")[0];
-      const doc = await db.collection("USUARIOS").doc(userId).get();
       const nameEl = $("#user-details");
       const unitEl = $("#user-client-unit");
-      if (doc.exists) {
-        usuarioSalienteData = { ...doc.data(), id: userId };
-        nameEl.textContent = `${usuarioSalienteData.NOMBRES} ${usuarioSalienteData.APELLIDOS}`;
-        unitEl.textContent = `${usuarioSalienteData.CLIENTE} - ${usuarioSalienteData.UNIDAD} - ${usuarioSalienteData.PUESTO || ''}`;
-        
-        // 💾 Guardar datos del usuario offline
-        if (typeof offlineStorage !== 'undefined') {
-          await offlineStorage.setUserData({
-            email: user.email,
-            userId: userId,
-            nombres: usuarioSalienteData.NOMBRES,
-            apellidos: usuarioSalienteData.APELLIDOS,
-            cliente: usuarioSalienteData.CLIENTE,
-            unidad: usuarioSalienteData.UNIDAD,
-            puesto: usuarioSalienteData.PUESTO
-          }).catch(e => console.warn('Error guardando datos offline:', e));
+      
+      // Intentar cargar de Firestore primero
+      try {
+        const doc = await db.collection("USUARIOS").doc(userId).get();
+        if (doc.exists) {
+          usuarioSalienteData = { ...doc.data(), id: userId };
+          nameEl.textContent = `${usuarioSalienteData.NOMBRES} ${usuarioSalienteData.APELLIDOS}`;
+          unitEl.textContent = `${usuarioSalienteData.CLIENTE} - ${usuarioSalienteData.UNIDAD} - ${usuarioSalienteData.PUESTO || ''}`;
+          
+          // 💾 Guardar datos del usuario offline para acceso futuro sin internet
+          if (typeof offlineStorage !== 'undefined') {
+            await offlineStorage.setUserData({
+              email: user.email,
+              userId: userId,
+              nombres: usuarioSalienteData.NOMBRES,
+              apellidos: usuarioSalienteData.APELLIDOS,
+              cliente: usuarioSalienteData.CLIENTE,
+              unidad: usuarioSalienteData.UNIDAD,
+              puesto: usuarioSalienteData.PUESTO
+            }).catch(e => console.warn('Error guardando datos offline:', e));
+          }
+          console.log('✓ Usuario cargado desde Firestore:', userId);
+          return;
         }
-      } else {
-        nameEl.textContent = user.email;
+      } catch (firebaseError) {
+        console.warn('No se pudo cargar de Firestore (probablemente sin internet):', firebaseError?.message);
       }
-    } catch (err) { console.error("Error al obtener usuario:", err); }
+      
+      // FALLBACK: Cargar del almacenamiento offline
+      if (typeof offlineStorage !== 'undefined') {
+        const cachedUser = await offlineStorage.getUserData();
+        if (cachedUser && cachedUser.userId === userId) {
+          // El usuario en cache coincide con el actual
+          usuarioSalienteData = cachedUser;
+          nameEl.textContent = `${cachedUser.nombres} ${cachedUser.apellidos}`;
+          unitEl.textContent = `${cachedUser.cliente} - ${cachedUser.unidad} - ${cachedUser.puesto || ''}`;
+          console.log('✓ Usuario cargado desde cache offline:', userId);
+          return;
+        } else if (cachedUser) {
+          // El usuario en cache es diferente (relevo hecho)
+          console.log('Usuario en cache es diferente (relevo). Limpiando...');
+          await offlineStorage.clearAll();
+          nameEl.textContent = user.email;
+          unitEl.textContent = '';
+          return;
+        }
+      }
+      
+      // Si no hay cache ni conexión, usar email como nombre
+      nameEl.textContent = user.email;
+      unitEl.textContent = '';
+      console.log('No hay datos de usuario disponibles');
+    } catch (err) { 
+      console.error("Error en auth callback:", err); 
+    }
   });
 
   // === Selectores ===
