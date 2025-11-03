@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Debug Acceso Vehicular</title>
+  <style>
+    body { font-family: monospace; background: #1a1a1a; color: #0f0; padding: 20px; }
+    pre { background: #000; padding: 10px; margin: 10px 0; }
+    .ok { color: #0f0; }
+    .error { color: #f00; }
+  </style>
+</head>
+<body>
+  <h1>Debug: Carga de Scripts</h1>
+  <pre id="log"></pre>
+
+  <script>
+    const log = document.getElementById('log');
+    
+    function logEvent(msg, isError = false) {
+      const class_ = isError ? 'error' : 'ok';
+      log.innerHTML += `<span class="${class_}">${new Date().toLocaleTimeString()}: ${msg}</span>\n`;
+      console.log(msg);
+    }
+
+    logEvent('✓ debug.html cargado');
+  </script>
+
+  <!-- Firebase -->
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.min.js"></script>
+  <script>
+    logEvent(firebase ? '✓ firebase-app-compat cargado' : '✗ firebase-app-compat no disponible', !firebase);
+  </script>
+
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.min.js"></script>
+  <script>
+    logEvent('✓ firebase-auth-compat cargado');
+  </script>
+
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.min.js"></script>
+  <script>
+    logEvent('✓ firebase-firestore-compat cargado');
+  </script>
+
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-storage-compat.min.js"></script>
+  <script>
+    logEvent('✓ firebase-storage-compat cargado');
+  </script>
+
+  <script src="firebase-config.js?v=55"></script>
+  <script>
+    logEvent(window.firebaseConfig ? '✓ firebase-config cargado' : '✗ firebase-config no disponible', !window.firebaseConfig);
+    if (window.firebaseConfig) {
+      logEvent(`  projectId: ${firebaseConfig.projectId}`);
+    }
+  </script>
+
+  <script src="initFirebase.js?v=60"></script>
+  <script>
+    logEvent('✓ initFirebase.js cargado');
+    if (firebase.apps.length > 0) {
+      logEvent(`✓ Firebase app inicializada (${firebase.apps.length} app(s))`);
+    }
+  </script>
+
+  <script src="https://cdn.jsdelivr.net/npm/image-compressor.js@2.0.0/image-compressor.min.js"></script>
+  <script>
+    logEvent(window.ImageCompression ? '✓ ImageCompressor cargado' : '✗ ImageCompressor no disponible', !window.ImageCompression);
+  </script>
+
+  <script src="offline-storage.js?v=55"></script>
+  <script>
+    logEvent(window.OfflineStorage ? '✓ OfflineStorage cargado' : '✗ OfflineStorage no disponible', !window.OfflineStorage);
+  </script>
+
+  <script src="ui.js?v=56"></script>
+  <script>
+    logEvent(window.UI ? '✓ UI cargado' : '✗ UI no disponible', !window.UI);
+  </script>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      logEvent('✓ DOMContentLoaded disparado');
+      logEvent('✓ Todos los scripts deberían estar cargados ahora');
+    });
+  </script>
+</body>
+</html>

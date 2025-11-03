@@ -11,3 +11,6 @@ const firebaseConfig = {
 };
 
 // No inicializar la app aquí, ya se hace en auth.js
+
+// ✅ Asegurar que la configuración esté disponible globalmente
+window.firebaseConfig = window.firebaseConfig || firebaseConfig;

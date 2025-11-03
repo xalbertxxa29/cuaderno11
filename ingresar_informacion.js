@@ -1,4 +1,137 @@
-// ingresar_informacion.js (v51) — Guarda en CUADERNO con reintento offline (cola)
+// ingresar_informacion.js (v52) — Guarda en CUADERNO con reintento offline (cola)
+// ✅ OFFLINE SUPPORT: saveToOfflineDB, syncOfflineRecords, polling
+
+// ===================== FUNCIONES OFFLINE =====================
+function saveToOfflineDB(payload, docId, collectionName = 'cuaderno') {
+  return new Promise((resolve, reject) => {
+    try {
+      const request = indexedDB.open('informacion-offline-db', 1);
+      
+      request.onerror = () => {
+        console.warn('❌ Error abriendo IndexedDB en saveToOfflineDB');
+        reject(request.error);
+      };
+      
+      request.onupgradeneeded = (event) => {
+        const db_offline = event.target.result;
+        if (!db_offline.objectStoreNames.contains('pending-records')) {
+          db_offline.createObjectStore('pending-records', { keyPath: 'id', autoIncrement: true });
+        }
+      };
+      
+      request.onsuccess = (event) => {
+        const db_offline = event.target.result;
+        const tx = db_offline.transaction(['pending-records'], 'readwrite');
+        const store = tx.objectStore('pending-records');
+        
+        const addRequest = store.add({
+          docId: docId,
+          payload: payload,
+          timestamp: Date.now(),
+          synced: false,
+          collectionName: collectionName
+        });
+        
+        addRequest.onsuccess = () => {
+          console.log('✓ Información guardada en IndexedDB:', docId);
+          resolve();
+        };
+        
+        addRequest.onerror = () => {
+          console.warn('Error agregando a IndexedDB:', addRequest.error?.message);
+          resolve();
+        };
+      };
+    } catch (e) {
+      console.warn('Error en saveToOfflineDB:', e?.message);
+      reject(e);
+    }
+  });
+}
+
+async function syncOfflineRecords() {
+  return new Promise((resolve) => {
+    try {
+      const dbRequest = indexedDB.open('informacion-offline-db', 1);
+      
+      dbRequest.onerror = () => {
+        console.error('❌ Error abriendo IndexedDB en syncOfflineRecords');
+        resolve();
+      };
+      
+      dbRequest.onsuccess = (event) => {
+        const db_offline = event.target.result;
+        const tx = db_offline.transaction(['pending-records'], 'readonly');
+        const store = tx.objectStore('pending-records');
+        const getAllRequest = store.getAll();
+        
+        getAllRequest.onsuccess = async () => {
+          const records = getAllRequest.result;
+          console.log(`🔄 Sincronizando ${records.length} registros de información offline...`);
+          
+          if (records.length === 0) {
+            console.log('✓ No hay registros de información para sincronizar');
+            resolve();
+            return;
+          }
+          
+          let syncedCount = 0;
+          
+          for (const record of records) {
+            if (!record.synced) {
+              try {
+                console.log(`📤 Enviando información ${syncedCount + 1}/${records.length}: ${record.docId}`);
+                
+                // Enviar a Firestore
+                await new Promise((promiseResolve, promiseReject) => {
+                  db.collection('CUADERNO').doc(record.docId).set(record.payload)
+                    .then(() => {
+                      console.log(`✓ Información enviada exitosamente: ${record.docId}`);
+                      promiseResolve();
+                    })
+                    .catch(err => {
+                      console.error(`❌ Error enviando ${record.docId}:`, err?.message);
+                      promiseReject(err);
+                    });
+                });
+                
+                // Marcar como sincronizado en IndexedDB
+                const updateTx = db_offline.transaction(['pending-records'], 'readwrite');
+                const updateStore = updateTx.objectStore('pending-records');
+                record.synced = true;
+                record.syncedAt = new Date().toISOString();
+                
+                await new Promise((promiseResolve, promiseReject) => {
+                  const putReq = updateStore.put(record);
+                  putReq.onsuccess = promiseResolve;
+                  putReq.onerror = promiseReject;
+                });
+                
+                syncedCount++;
+              } catch (e) {
+                console.error(`⚠️ No se pudo sincronizar ${record.docId}:`, e?.message);
+              }
+            }
+          }
+          
+          console.log(`✅ Sincronización completada: ${syncedCount}/${records.length} registros`);
+          resolve();
+        };
+        
+        getAllRequest.onerror = () => {
+          console.error('Error leyendo pending-records:', getAllRequest.error);
+          resolve();
+        };
+      };
+    } catch (e) {
+      console.error('Error en syncOfflineRecords:', e);
+      resolve();
+    }
+  });
+}
+
+// =========================================================
+
 document.addEventListener('DOMContentLoaded', () => {
   if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
   const auth     = firebase.auth();
@@ -95,6 +228,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const { CLIENTE, UNIDAD, PUESTO, NOMBRES, APELLIDOS } = profile;
       const stamp = Date.now();
+      const docId = `informacion_${stamp}`;
 
       // Foto (URL si online, embebida si offline)
       let fotoURL = null, fotoEmbedded = null;
@@ -119,39 +253,89 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }
 
-      const ref = await db.collection('CUADERNO').add({
+      // 📦 Construir payload
+      const payload = {
         cliente: CLIENTE,
         unidad: UNIDAD,
         puesto: PUESTO || null,
         usuario: `${NOMBRES || ''} ${APELLIDOS || ''}`.trim(),
         comentario: texto,
         tipoRegistro: 'REGISTRO',
-        timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+        timestamp: new Date().toISOString(),
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
         ...(fotoURL ? { fotoURL } : {}),
         ...(firmaURL ? { firmaURL } : {}),
         ...(fotoEmbedded ? { fotoEmbedded } : {}),
         ...(firmaEmbedded ? { firmaEmbedded } : {}),
-      });
+      };
 
-      // Encolar si quedaron embebidos (para re-subir luego)
-      if ((fotoEmbedded || firmaEmbedded) && window.OfflineQueue) {
-        await OfflineQueue.add({
-          type: 'cuaderno-upload',
-          docPath: `CUADERNO/${ref.id}`,
-          cliente: CLIENTE,
-          unidad: UNIDAD,
-          fotoEmbedded: fotoEmbedded || null,
-          firmaEmbedded: firmaEmbedded || null,
-          createdAt: Date.now()
-        });
+      // 💾 Guardar OFFLINE primero
+      await saveToOfflineDB(payload, docId, 'CUADERNO');
+
+      // 🌐 Intentar guardar a Firebase (sin esperar si está offline)
+      if (navigator.onLine) {
+        try {
+          await db.collection('CUADERNO').doc(docId).set(payload);
+          console.log('✓ Información enviada a Firebase:', docId);
+        } catch (firebaseErr) {
+          console.warn('⚠️ Error enviando a Firebase, guardado solo offline:', firebaseErr?.message);
+        }
+      } else {
+        console.log('🔌 Offline detectado, información guardada offline. Se sincronizará cuando vuelva la conexión.');
       }
 
       UX.hide();
-      UX.alert('Éxito', 'Información guardada.', () => window.location.href = 'menu.html');
+      UX.alert('Éxito', navigator.onLine 
+        ? 'Información guardada.' 
+        : 'Información guardada offline. Se sincronizará cuando vuelva la conexión.', 
+        () => window.location.href = 'menu.html'
+      );
     } catch (err) {
       console.error(err);
       UX.hide();
       UX.alert('Error', err.message || 'No se pudo guardar.');
     }
   });
+
+  // ===================== POLLING PARA DETECTAR CONEXIÓN =====================
+  let lastOnlineState = navigator.onLine;
+  setInterval(() => {
+    const currentOnlineState = navigator.onLine;
+    
+    // Detectar cambio de offline a online
+    if (!lastOnlineState && currentOnlineState) {
+      console.log('🌐 Cambio detectado: Pasó de OFFLINE a ONLINE');
+      lastOnlineState = true;
+      
+      (async () => {
+        try {
+          console.log('Sincronizando información offline...');
+          await syncOfflineRecords();
+          console.log('✅ Sincronización completada');
+        } catch (e) {
+          console.error('Error durante sincronización:', e);
+        }
+      })();
+    } 
+    // Detectar cambio de online a offline
+    else if (lastOnlineState && !currentOnlineState) {
+      console.log('🔌 Cambio detectado: Pasó de ONLINE a OFFLINE');
+      lastOnlineState = false;
+    }
+  }, 2000); // Verificar cada 2 segundos
+
+  // También escuchar eventos nativos (para navegadores de escritorio)
+  window.addEventListener('online', async () => {
+    console.log('🌐 Evento "online" detectado (navegador)');
+    lastOnlineState = true;
+    
+    try {
+      console.log('Sincronizando información offline...');
+      await syncOfflineRecords();
+      console.log('✅ Sincronización completada');
+    } catch (e) {
+      console.error('Error durante sincronización:', e);
+    }
+  });
 });
+

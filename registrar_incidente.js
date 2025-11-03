@@ -1,5 +1,138 @@
-// registrar_incidente.js (v60)
-// Botones “+” con modal centrado (sin prompt), foto offline, Nivel de Riego (sin firma)
+// registrar_incidente.js (v61)
+// Botones "+" con modal centrado (sin prompt), foto offline, Nivel de Riego (sin firma)
+// ✅ OFFLINE SUPPORT: saveToOfflineDB, syncOfflineRecords, polling
+
+// ===================== FUNCIONES OFFLINE =====================
+function saveToOfflineDB(payload, docId, collectionName = 'incidencias') {
+  return new Promise((resolve, reject) => {
+    try {
+      const request = indexedDB.open('incidentes-offline-db', 1);
+      
+      request.onerror = () => {
+        console.warn('❌ Error abriendo IndexedDB en saveToOfflineDB');
+        reject(request.error);
+      };
+      
+      request.onupgradeneeded = (event) => {
+        const db_offline = event.target.result;
+        if (!db_offline.objectStoreNames.contains('pending-records')) {
+          db_offline.createObjectStore('pending-records', { keyPath: 'id', autoIncrement: true });
+        }
+      };
+      
+      request.onsuccess = (event) => {
+        const db_offline = event.target.result;
+        const tx = db_offline.transaction(['pending-records'], 'readwrite');
+        const store = tx.objectStore('pending-records');
+        
+        const addRequest = store.add({
+          docId: docId,
+          payload: payload,
+          timestamp: Date.now(),
+          synced: false,
+          collectionName: collectionName
+        });
+        
+        addRequest.onsuccess = () => {
+          console.log('✓ Incidente guardado en IndexedDB:', docId);
+          resolve();
+        };
+        
+        addRequest.onerror = () => {
+          console.warn('Error agregando a IndexedDB:', addRequest.error?.message);
+          resolve();
+        };
+      };
+    } catch (e) {
+      console.warn('Error en saveToOfflineDB:', e?.message);
+      reject(e);
+    }
+  });
+}
+
+async function syncOfflineRecords() {
+  return new Promise((resolve) => {
+    try {
+      const dbRequest = indexedDB.open('incidentes-offline-db', 1);
+      
+      dbRequest.onerror = () => {
+        console.error('❌ Error abriendo IndexedDB en syncOfflineRecords');
+        resolve();
+      };
+      
+      dbRequest.onsuccess = (event) => {
+        const db_offline = event.target.result;
+        const tx = db_offline.transaction(['pending-records'], 'readonly');
+        const store = tx.objectStore('pending-records');
+        const getAllRequest = store.getAll();
+        
+        getAllRequest.onsuccess = async () => {
+          const records = getAllRequest.result;
+          console.log(`🔄 Sincronizando ${records.length} incidentes offline...`);
+          
+          if (records.length === 0) {
+            console.log('✓ No hay incidentes para sincronizar');
+            resolve();
+            return;
+          }
+          
+          let syncedCount = 0;
+          
+          for (const record of records) {
+            if (!record.synced) {
+              try {
+                console.log(`📤 Enviando incidente ${syncedCount + 1}/${records.length}: ${record.docId}`);
+                
+                // Enviar a Firestore
+                await new Promise((promiseResolve, promiseReject) => {
+                  db.collection('INCIDENCIAS_REGISTRADAS').doc(record.docId).set(record.payload)
+                    .then(() => {
+                      console.log(`✓ Incidente enviado exitosamente: ${record.docId}`);
+                      promiseResolve();
+                    })
+                    .catch(err => {
+                      console.error(`❌ Error enviando ${record.docId}:`, err?.message);
+                      promiseReject(err);
+                    });
+                });
+                
+                // Marcar como sincronizado en IndexedDB
+                const updateTx = db_offline.transaction(['pending-records'], 'readwrite');
+                const updateStore = updateTx.objectStore('pending-records');
+                record.synced = true;
+                record.syncedAt = new Date().toISOString();
+                
+                await new Promise((promiseResolve, promiseReject) => {
+                  const putReq = updateStore.put(record);
+                  putReq.onsuccess = promiseResolve;
+                  putReq.onerror = promiseReject;
+                });
+                
+                syncedCount++;
+              } catch (e) {
+                console.error(`⚠️ No se pudo sincronizar ${record.docId}:`, e?.message);
+              }
+            }
+          }
+          
+          console.log(`✅ Sincronización completada: ${syncedCount}/${records.length} incidentes`);
+          resolve();
+        };
+        
+        getAllRequest.onerror = () => {
+          console.error('Error leyendo pending-records:', getAllRequest.error);
+          resolve();
+        };
+      };
+    } catch (e) {
+      console.error('Error en syncOfflineRecords:', e);
+      resolve();
+    }
+  });
+}
+
+// =========================================================
+
 document.addEventListener('DOMContentLoaded', () => {
   // --- Firebase ---
   if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
@@ -312,6 +445,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const { CLIENTE, UNIDAD, NOMBRES, APELLIDOS, PUESTO } = currentUserProfile;
       const stamp = Date.now();
+      const docId = `incidente_${stamp}`;
 
       let fotoURL = null, fotoEmbedded = null;
       if (pendingPhoto) {
@@ -320,38 +454,89 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       if (fotoEmbedded && fotoEmbedded.length > MAX_EMBED_LEN) fotoEmbedded = null;
 
-      const ref = await db.collection('INCIDENCIAS_REGISTRADAS').add({
+      // 📦 Construir payload
+      const payload = {
         cliente: CLIENTE,
         unidad : UNIDAD,
         puesto : PUESTO || null,
         registradoPor: `${NOMBRES || ''} ${APELLIDOS || ''}`.trim(),
         tipoIncidente,
         detalleIncidente,
-        Nivelderiesgo: nivelRiesgo, // <— campo solicitado
+        Nivelderiesgo: nivelRiesgo,
         comentario,
         estado: 'Pendiente',
-        timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+        timestamp: new Date().toISOString(),
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
         ...(fotoURL ? { fotoURL } : {}),
         ...(fotoEmbedded ? { fotoEmbedded } : {}),
-      });
+      };
 
-      // Reintento de subida si se guardó embebido (offline)
-      if (fotoEmbedded && window.OfflineQueue) {
-        await OfflineQueue.add({
-          type: 'incidencia-upload',
-          docPath: `INCIDENCIAS_REGISTRADAS/${ref.id}`,
-          cliente: CLIENTE,
-          unidad : UNIDAD,
-          fotoEmbedded,
-          createdAt: Date.now()
-        });
+      // 💾 Guardar OFFLINE primero
+      await saveToOfflineDB(payload, docId, 'INCIDENCIAS_REGISTRADAS');
+
+      // 🌐 Intentar guardar a Firebase (sin esperar si está offline)
+      if (navigator.onLine) {
+        try {
+          await db.collection('INCIDENCIAS_REGISTRADAS').doc(docId).set(payload);
+          console.log('✓ Incidente enviado a Firebase:', docId);
+        } catch (firebaseErr) {
+          console.warn('⚠️ Error enviando a Firebase, guardado solo offline:', firebaseErr?.message);
+        }
+      } else {
+        console.log('🔌 Offline detectado, incidente guardado offline. Se sincronizará cuando vuelva la conexión.');
       }
 
       UX.hide();
-      UX.alert('Éxito', 'Incidente guardado correctamente.', () => window.location.href = 'menu.html');
+      UX.alert('Éxito', navigator.onLine 
+        ? 'Incidente guardado correctamente.' 
+        : 'Incidente guardado offline. Se sincronizará cuando vuelva la conexión.', 
+        () => window.location.href = 'menu.html'
+      );
     } catch (err) {
       console.error(err); UX.hide();
       UX.alert('Error', err.message || 'No fue posible guardar el incidente.');
     }
   });
+
+  // ===================== POLLING PARA DETECTAR CONEXIÓN =====================
+  let lastOnlineState = navigator.onLine;
+  setInterval(() => {
+    const currentOnlineState = navigator.onLine;
+    
+    // Detectar cambio de offline a online
+    if (!lastOnlineState && currentOnlineState) {
+      console.log('🌐 Cambio detectado: Pasó de OFFLINE a ONLINE');
+      lastOnlineState = true;
+      
+      (async () => {
+        try {
+          console.log('Sincronizando incidentes offline...');
+          await syncOfflineRecords();
+          console.log('✅ Sincronización completada');
+        } catch (e) {
+          console.error('Error durante sincronización:', e);
+        }
+      })();
+    } 
+    // Detectar cambio de online a offline
+    else if (lastOnlineState && !currentOnlineState) {
+      console.log('🔌 Cambio detectado: Pasó de ONLINE a OFFLINE');
+      lastOnlineState = false;
+    }
+  }, 2000); // Verificar cada 2 segundos
+
+  // También escuchar eventos nativos (para navegadores de escritorio)
+  window.addEventListener('online', async () => {
+    console.log('🌐 Evento "online" detectado (navegador)');
+    lastOnlineState = true;
+    
+    try {
+      console.log('Sincronizando incidentes offline...');
+      await syncOfflineRecords();
+      console.log('✅ Sincronización completada');
+    } catch (e) {
+      console.error('Error durante sincronización:', e);
+    }
+  });
 });
+

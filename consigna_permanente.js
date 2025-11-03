@@ -1,4 +1,137 @@
-// consigna_permanente.js (v51) — Guarda registradoPor y puesto. Offline-friendly.
+// consigna_permanente.js (v52) — Guarda registradoPor y puesto. Offline-friendly.
+// ✅ OFFLINE SUPPORT: saveToOfflineDB, syncOfflineRecords, polling
+
+// ===================== FUNCIONES OFFLINE =====================
+function saveToOfflineDB(payload, docId, collectionName = 'consignas') {
+  return new Promise((resolve, reject) => {
+    try {
+      const request = indexedDB.open('consignas-offline-db', 1);
+      
+      request.onerror = () => {
+        console.warn('❌ Error abriendo IndexedDB en saveToOfflineDB');
+        reject(request.error);
+      };
+      
+      request.onupgradeneeded = (event) => {
+        const db_offline = event.target.result;
+        if (!db_offline.objectStoreNames.contains('pending-records')) {
+          db_offline.createObjectStore('pending-records', { keyPath: 'id', autoIncrement: true });
+        }
+      };
+      
+      request.onsuccess = (event) => {
+        const db_offline = event.target.result;
+        const tx = db_offline.transaction(['pending-records'], 'readwrite');
+        const store = tx.objectStore('pending-records');
+        
+        const addRequest = store.add({
+          docId: docId,
+          payload: payload,
+          timestamp: Date.now(),
+          synced: false,
+          collectionName: collectionName
+        });
+        
+        addRequest.onsuccess = () => {
+          console.log('✓ Consigna guardada en IndexedDB:', docId);
+          resolve();
+        };
+        
+        addRequest.onerror = () => {
+          console.warn('Error agregando a IndexedDB:', addRequest.error?.message);
+          resolve();
+        };
+      };
+    } catch (e) {
+      console.warn('Error en saveToOfflineDB:', e?.message);
+      reject(e);
+    }
+  });
+}
+
+async function syncOfflineRecords() {
+  return new Promise((resolve) => {
+    try {
+      const dbRequest = indexedDB.open('consignas-offline-db', 1);
+      
+      dbRequest.onerror = () => {
+        console.error('❌ Error abriendo IndexedDB en syncOfflineRecords');
+        resolve();
+      };
+      
+      dbRequest.onsuccess = (event) => {
+        const db_offline = event.target.result;
+        const tx = db_offline.transaction(['pending-records'], 'readonly');
+        const store = tx.objectStore('pending-records');
+        const getAllRequest = store.getAll();
+        
+        getAllRequest.onsuccess = async () => {
+          const records = getAllRequest.result;
+          console.log(`🔄 Sincronizando ${records.length} consignas permanentes offline...`);
+          
+          if (records.length === 0) {
+            console.log('✓ No hay consignas para sincronizar');
+            resolve();
+            return;
+          }
+          
+          let syncedCount = 0;
+          
+          for (const record of records) {
+            if (!record.synced) {
+              try {
+                console.log(`📤 Enviando consigna ${syncedCount + 1}/${records.length}: ${record.docId}`);
+                
+                // Enviar a Firestore
+                await new Promise((promiseResolve, promiseReject) => {
+                  db.collection('CONSIGNAS_PERMANENTES').doc(record.docId).set(record.payload)
+                    .then(() => {
+                      console.log(`✓ Consigna enviada exitosamente: ${record.docId}`);
+                      promiseResolve();
+                    })
+                    .catch(err => {
+                      console.error(`❌ Error enviando ${record.docId}:`, err?.message);
+                      promiseReject(err);
+                    });
+                });
+                
+                // Marcar como sincronizado en IndexedDB
+                const updateTx = db_offline.transaction(['pending-records'], 'readwrite');
+                const updateStore = updateTx.objectStore('pending-records');
+                record.synced = true;
+                record.syncedAt = new Date().toISOString();
+                
+                await new Promise((promiseResolve, promiseReject) => {
+                  const putReq = updateStore.put(record);
+                  putReq.onsuccess = promiseResolve;
+                  putReq.onerror = promiseReject;
+                });
+                
+                syncedCount++;
+              } catch (e) {
+                console.error(`⚠️ No se pudo sincronizar ${record.docId}:`, e?.message);
+              }
+            }
+          }
+          
+          console.log(`✅ Sincronización completada: ${syncedCount}/${records.length} consignas`);
+          resolve();
+        };
+        
+        getAllRequest.onerror = () => {
+          console.error('Error leyendo pending-records:', getAllRequest.error);
+          resolve();
+        };
+      };
+    } catch (e) {
+      console.error('Error en syncOfflineRecords:', e);
+      resolve();
+    }
+  });
+}
+
+// =========================================================
+
 document.addEventListener('DOMContentLoaded', () => {
   if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
   const auth    = firebase.auth();
@@ -89,6 +222,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const { CLIENTE, UNIDAD, PUESTO, NOMBRES, APELLIDOS } = profile;
       const stamp = Date.now();
+      const docId = `consigna_permanente_${stamp}`;
 
       let fotoURL=null, fotoEmbedded=null;
       if (pendingPhoto) {
@@ -111,26 +245,89 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }
 
-      await db.collection('CONSIGNA_PERMANENTE').add({
+      // 📦 Construir payload
+      const payload = {
         cliente: CLIENTE,
         unidad: UNIDAD,
-        puesto: PUESTO || null,                                // NUEVO (si no lo tenías)
-        registradoPor: `${NOMBRES||''} ${APELLIDOS||''}`.trim(),// NUEVO
+        puesto: PUESTO || null,
+        registradoPor: `${NOMBRES||''} ${APELLIDOS||''}`.trim(),
         titulo,
         descripcion,
-        timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+        timestamp: new Date().toISOString(),
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
         ...(fotoURL ? { fotoURL } : {}),
         ...(firmaURL ? { firmaURL } : {}),
         ...(fotoEmbedded ? { fotoEmbedded } : {}),
         ...(firmaEmbedded ? { firmaEmbedded } : {}),
-      });
+      };
+
+      // 💾 Guardar OFFLINE primero
+      await saveToOfflineDB(payload, docId, 'CONSIGNA_PERMANENTE');
+
+      // 🌐 Intentar guardar a Firebase (sin esperar si está offline)
+      if (navigator.onLine) {
+        try {
+          await db.collection('CONSIGNA_PERMANENTE').doc(docId).set(payload);
+          console.log('✓ Consigna enviada a Firebase:', docId);
+        } catch (firebaseErr) {
+          console.warn('⚠️ Error enviando a Firebase, guardado solo offline:', firebaseErr?.message);
+        }
+      } else {
+        console.log('🔌 Offline detectado, consigna guardada offline. Se sincronizará cuando vuelva la conexión.');
+      }
 
       UX.hide();
-      UX.alert('Éxito','Consigna permanente guardada.', () => window.location.href='menu.html');
+      UX.alert('Éxito', navigator.onLine 
+        ? 'Consigna permanente guardada.' 
+        : 'Consigna guardada offline. Se sincronizará cuando vuelva la conexión.', 
+        () => window.location.href='menu.html'
+      );
     } catch (err) {
       console.error(err);
       UX.hide();
       UX.alert('Error', err.message || 'No se pudo guardar la consigna.');
     }
   });
+
+  // ===================== POLLING PARA DETECTAR CONEXIÓN =====================
+  let lastOnlineState = navigator.onLine;
+  setInterval(() => {
+    const currentOnlineState = navigator.onLine;
+    
+    // Detectar cambio de offline a online
+    if (!lastOnlineState && currentOnlineState) {
+      console.log('🌐 Cambio detectado: Pasó de OFFLINE a ONLINE');
+      lastOnlineState = true;
+      
+      (async () => {
+        try {
+          console.log('Sincronizando consignas permanentes offline...');
+          await syncOfflineRecords();
+          console.log('✅ Sincronización completada');
+        } catch (e) {
+          console.error('Error durante sincronización:', e);
+        }
+      })();
+    } 
+    // Detectar cambio de online a offline
+    else if (lastOnlineState && !currentOnlineState) {
+      console.log('🔌 Cambio detectado: Pasó de ONLINE a OFFLINE');
+      lastOnlineState = false;
+    }
+  }, 2000); // Verificar cada 2 segundos
+
+  // También escuchar eventos nativos (para navegadores de escritorio)
+  window.addEventListener('online', async () => {
+    console.log('🌐 Evento "online" detectado (navegador)');
+    lastOnlineState = true;
+    
+    try {
+      console.log('Sincronizando consignas permanentes offline...');
+      await syncOfflineRecords();
+      console.log('✅ Sincronización completada');
+    } catch (e) {
+      console.error('Error durante sincronización:', e);
+    }
+  });
 });
+
