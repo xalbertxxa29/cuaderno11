@@ -718,7 +718,10 @@ async function syncOfflineRecords() {
                   meta: record.payload.meta || {},
                   pendingUpload: !!record.payload.fotoDataUrl,
                   synced: true,
-                  syncedAt: new Date().toISOString()
+                  syncedAt: new Date().toISOString(),
+                  cliente: record.payload.cliente,     // ✅ CLIENTE
+                  unidad: record.payload.unidad,       // ✅ UNIDAD
+                  puesto: record.payload.puesto        // ✅ PUESTO
                 };
                 
                 // IMPORTANTE: Esperar a que se complete
@@ -784,7 +787,7 @@ formSinNovedad?.addEventListener('submit', async e => {
   if (!currentScannedData) return showToast('Primero escanea un punto.', 'error');
   if (!usuarioLogueado) return showToast('Usuario no autenticado.', 'error');
 
-  const payload = buildPayload({
+  const payload = await buildPayload({
     nombreAgente: usuarioLogueado, 
     observacion: '', 
     tipo: 'SIN NOVEDAD', 
@@ -829,7 +832,7 @@ formConNovedad?.addEventListener('submit', async e => {
     return showToast('Responde todas las preguntas (1–6).', 'error');
   const p6Comentario = (p6 === 'SI') ? q6Comment?.value.trim() : '';
 
-  const payload = buildPayload({
+  const payload = await buildPayload({
     nombreAgente: nombreCompleto,
     usuarioId: usuarioLogueado,
     observacion: obs,
@@ -859,7 +862,34 @@ formConNovedad?.addEventListener('submit', async e => {
   }
 });
 
-function buildPayload({ nombreAgente, usuarioId, observacion, tipo, fotoDataUrl, preguntas }) {
+async function buildPayload({ nombreAgente, usuarioId, observacion, tipo, fotoDataUrl, preguntas }) {
+  // Obtener cliente, unidad y puesto del offline storage
+  let cliente = '';
+  let unidad = '';
+  let puesto = '';
+  
+  if (typeof offlineStorage !== 'undefined') {
+    try {
+      console.log('🔍 Intentando obtener datos de offlineStorage...');
+      cliente = await offlineStorage.getGlobalData('selected-cliente') || '';
+      console.log('✓ Cliente obtenido:', cliente);
+      
+      unidad = await offlineStorage.getGlobalData('selected-unidad') || '';
+      console.log('✓ Unidad obtenida:', unidad);
+      
+      puesto = await offlineStorage.getGlobalData('selected-puesto') || '';
+      console.log('✓ Puesto obtenido:', puesto);
+      
+      console.log('✅ Datos de organización cargados:', { cliente, unidad, puesto });
+    } catch (e) {
+      console.error('❌ Error obteniendo datos globales de offlineStorage:', e);
+    }
+  } else {
+    console.warn('⚠️ offlineStorage no está definido');
+  }
+  
+  console.log('📦 Payload construido con:', { cliente, unidad, puesto });
+  
   return {
     puntoMarcacion: currentScannedData.puntoMarcacion,
     referenciaQR: currentScannedData.referencia,
@@ -870,7 +900,10 @@ function buildPayload({ nombreAgente, usuarioId, observacion, tipo, fotoDataUrl,
     tipo, 
     fotoDataUrl, 
     preguntas,
-    timerElapsedSeconds: timerElapsedSeconds,  // Agregar tiempo transcurrido
+    timerElapsedSeconds: timerElapsedSeconds,
+    cliente,     // ✅ CLIENTE
+    unidad,      // ✅ UNIDAD
+    puesto,      // ✅ PUESTO
     meta: {
       ua: navigator.userAgent || '',
       platform: navigator.platform || '',
@@ -943,7 +976,10 @@ function sendToFirebase(payload) {
       createdAt: fb.firestore.FieldValue.serverTimestamp(),
       meta: payload.meta || {},
       pendingUpload: !!payload.fotoDataUrl,
-      fotoOffline: (!payload.fotoDataUrl) ? false : !isOnline()
+      fotoOffline: (!payload.fotoDataUrl) ? false : !isOnline(),
+      cliente: payload.cliente,     // ✅ CLIENTE
+      unidad: payload.unidad,       // ✅ UNIDAD
+      puesto: payload.puesto        // ✅ PUESTO
     };
     
     // FIRE AND FORGET - No esperamos

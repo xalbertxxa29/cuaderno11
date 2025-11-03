@@ -51,6 +51,16 @@ document.addEventListener("DOMContentLoaded", () => {
               unidad: usuarioSalienteData.UNIDAD,
               puesto: usuarioSalienteData.PUESTO
             }).catch(e => console.warn('Error guardando datos offline:', e));
+            
+            // 💾 TAMBIÉN guardar cliente, unidad y puesto en datos globales
+            await offlineStorage.setGlobalData('selected-cliente', usuarioSalienteData.CLIENTE);
+            await offlineStorage.setGlobalData('selected-unidad', usuarioSalienteData.UNIDAD);
+            await offlineStorage.setGlobalData('selected-puesto', usuarioSalienteData.PUESTO);
+            console.log('✓ Datos de organización guardados automáticamente:', {
+              cliente: usuarioSalienteData.CLIENTE,
+              unidad: usuarioSalienteData.UNIDAD,
+              puesto: usuarioSalienteData.PUESTO
+            });
           }
           console.log('✓ Usuario cargado desde Firestore:', userId);
           return;
@@ -234,20 +244,26 @@ document.addEventListener("DOMContentLoaded", () => {
         cuUnidadInput.disabled = false;
         // 💾 Guardar cliente seleccionado offline
         if (typeof offlineStorage !== 'undefined') {
-          offlineStorage.setGlobalData('selected-cliente', cli).catch(e => console.warn('Error guardando cliente:', e));
+          offlineStorage.setGlobalData('selected-cliente', cli).then(() => {
+            console.log('✓ Cliente guardado:', cli);
+          }).catch(e => console.warn('Error guardando cliente:', e));
         }
         const unidades = Object.keys(clientesDataCU[cli] || {}).sort();
         UI.createSearchableDropdown(cuUnidadInput, cuUnidadList, unidades, uni => {
           cuPuestoInput.disabled = false;
           // 💾 Guardar unidad seleccionada offline
           if (typeof offlineStorage !== 'undefined') {
-            offlineStorage.setGlobalData('selected-unidad', uni).catch(e => console.warn('Error guardando unidad:', e));
+            offlineStorage.setGlobalData('selected-unidad', uni).then(() => {
+              console.log('✓ Unidad guardada:', uni);
+            }).catch(e => console.warn('Error guardando unidad:', e));
           }
           const puestos = (clientesDataCU[cli]?.[uni] || []).sort();
           UI.createSearchableDropdown(cuPuestoInput, cuPuestoList, puestos, pue => {
             // 💾 Guardar puesto seleccionado offline
             if (typeof offlineStorage !== 'undefined') {
-              offlineStorage.setGlobalData('selected-puesto', pue).catch(e => console.warn('Error guardando puesto:', e));
+              offlineStorage.setGlobalData('selected-puesto', pue).then(() => {
+                console.log('✓ Puesto guardado:', pue);
+              }).catch(e => console.warn('Error guardando puesto:', e));
             }
           });
         });
