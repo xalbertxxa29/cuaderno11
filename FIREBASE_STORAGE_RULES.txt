@@ -1,0 +1,45 @@
+CONFIGURAR REGLAS DE FIREBASE STORAGE
+======================================
+
+Las reglas actuales NO permiten que los usuarios suban archivos, por eso ves el error 412.
+
+PASOS:
+1. Ve a Firebase Console → Tu proyecto → Storage → Reglas
+2. Reemplaza todo el contenido con esto:
+
+---BEGIN RULES---
+
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Permite a usuarios autenticados subir archivos a la carpeta 'evidencias'
+    match /evidencias/{allPaths=**} {
+      allow read, write: if request.auth != null;
+    }
+    
+    // Permite lectura pública de archivos en 'evidencias' (fotos)
+    match /evidencias/{allPaths=**} {
+      allow get: if true;
+    }
+    
+    // Denegar todo lo demás por defecto
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
+
+---END RULES---
+
+3. Haz clic en "PUBLICAR"
+4. Vuelve a la aplicación y prueba nuevamente
+
+NOTAS:
+- Los usuarios autenticados pueden crear carpetas y subir archivos a /evidencias/
+- Todos pueden descargar las fotos (públicas)
+- El contenType debe ser image/jpeg (está configurado en el código)
+
+Si aún tienes problemas:
+- Verifica que estés autenticado en la app (mira la consola)
+- Asegúrate de que el usuario tiene permisos en Firestore también
+- Los nombres de archivo se generan automáticamente con timestamp

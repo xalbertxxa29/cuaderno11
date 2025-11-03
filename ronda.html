@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Control de Marcación</title>
+
+  <!-- PWA -->
+  <meta name="theme-color" content="#000000" />
+  <link rel="manifest" href="manifest.json" />
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="apple-touch-icon" href="icon-192.png">
+
+  <!-- CSS -->
+  <link rel="preload" href="style.css" as="style">
+  <link rel="stylesheet" href="style.css?v=60" />
+  <link rel="stylesheet" href="ronda.css?v=60" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.2.0/css/all.min.css">
+
+  <!-- Estilos adicionales locales -->
+  <style>
+    .hidden{display:none}
+    .questions{margin:10px 0 14px 20px;padding:0}
+    .questions li{margin:8px 0 10px;line-height:1.35}
+    .questions label{margin-left:10px;margin-right:8px;user-select:none}
+    .evidence-preview img{max-width:160px;max-height:160px;border-radius:10px;object-fit:cover}
+    
+    /* === Campo deshabilitado (usuario no editable) === */
+    input[disabled]{
+      background: #1a1a1a !important;
+      opacity: 0.7 !important;
+      cursor: not-allowed !important;
+      color: #888 !important;
+    }
+    
+    /* === Mensaje de permisos de cámara === */
+    #camera-permission-msg{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.55);z-index:9999;text-align:center;padding:20px}
+    #camera-permission-msg.active{display:flex}
+    #camera-permission-msg .msg-box{background:#fff;color:#111;padding:24px 30px;border-radius:14px;max-width:400px;box-shadow:0 8px 25px rgba(0,0,0,0.25);font-family:system-ui,Arial,sans-serif}
+    #camera-permission-msg h3{margin:0 0 12px;color:#111;letter-spacing:.5px}
+    #camera-permission-msg p{margin:10px 0 0;font-size:15px;line-height:1.5;color:#444}
+    #camera-permission-msg .btn-play{display:inline-flex;align-items:center;gap:10px;border:none;border-radius:999px;cursor:pointer;padding:14px 22px;font-weight:800;letter-spacing:.3px;background:#3b82f6;color:#fff;box-shadow:0 12px 32px rgba(59,130,246,.35);transition:transform .06s ease,box-shadow .18s ease;margin-top:6px}
+    #camera-permission-msg .btn-play:active{transform:scale(.98)}
+    #camera-permission-msg .btn-play:hover{box-shadow:0 16px 42px rgba(59,130,246,.45)}
+    #camera-permission-msg .hint{margin:12px 0 0;font-size:13px;color:#6b7280}
+  </style>
+
+  <!-- Firebase (compat) desde CDN -->
+  <script src="https://www.gstatic.com/firebasejs/10.9.0/firebase-app-compat.js" defer></script>
+  <script src="https://www.gstatic.com/firebasejs/10.9.0/firebase-firestore-compat.js" defer></script>
+  <script src="https://www.gstatic.com/firebasejs/10.9.0/firebase-storage-compat.js" defer></script>
+  <script src="https://www.gstatic.com/firebasejs/10.9.0/firebase-auth-compat.js" defer></script>
+
+  <!-- Librería de lectura QR desde CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js" defer></script>
+
+  <!-- Config de tu proyecto (define window.firebaseConfig) -->
+  <script src="firebase-config.js?v=60" defer></script>
+
+  <!-- Sistema compartido de almacenamiento offline -->
+  <script src="offline-storage.js?v=60" defer></script>
+
+  <!-- Sistema de sincronización offline para fotos -->
+  <script src="offline-sync.js?v=60" defer></script>
+
+  <!-- Tu lógica principal -->
+  <script src="ronda.js?v=60" defer></script>
+
+  <!-- Registro de Service Worker (por si aún no lo haces en script.js) -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js').catch(() => {/* noop */});
+      });
+    }
+  </script>
+</head>
+<body>
+  <noscript>
+    <div style="padding:12px;background:#222;color:#fff;text-align:center">
+      Esta aplicación requiere JavaScript habilitado para funcionar (incluyendo el modo offline).
+    </div>
+  </noscript>
+
+  <!-- Indicadores de Estado Offline -->
+  <div id="offline-indicator" style="display:none;position:fixed;bottom:15px;right:15px;background:#ff6b6b;color:#fff;padding:10px 15px;border-radius:8px;font-size:12px;z-index:1000;box-shadow:0 4px 12px rgba(0,0,0,0.3);">
+    <span style="font-size:16px;margin-right:8px;">📡</span>Sin conexión
+  </div>
+
+  <div id="sync-indicator" style="display:none;position:fixed;bottom:15px;left:15px;background:#4dabf7;color:#fff;padding:10px 15px;border-radius:8px;font-size:12px;z-index:1000;box-shadow:0 4px 12px rgba(0,0,0,0.3);">
+    <span style="animation:spin 2s linear infinite;display:inline-block;margin-right:8px;">⏳</span>Sincronizando fotos...
+  </div>
+
+  <style>
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  </style>
+
+  <!-- Cámara / Scanner -->
+  <div id="scanner-container">
+    <video id="video" playsinline></video>
+    <div id="scan-box-overlay"></div>
+    <div class="scanner-header">Apunte al código QR</div>
+  </div>
+
+  <!-- Canvas oculto -->
+  <canvas id="canvas" hidden></canvas>
+
+  <!-- Modal tras escanear -->
+  <div id="options-container" class="modal-container" style="display:none;">
+    <div class="modal-content">
+      <h3>Punto de Marcación</h3>
+      <p id="scanned-point-name">—</p>
+      <div class="button-group">
+        <button id="btn-con-novedad" class="btn-novedad btn btn-warn">CON NOVEDAD</button>
+        <button id="btn-sin-novedad" class="btn-normal btn btn-primary">SIN NOVEDAD</button>
+      </div>
+      <button id="btn-cancel-scan" class="btn-cancel btn">Cancelar</button>
+    </div>
+  </div>
+
+  <!-- Formulario SIN NOVEDAD -->
+  <div id="form-sin-novedad-container" class="modal-container" style="display:none;">
+    <div class="modal-content">
+      <h3>Registro Sin Novedad</h3>
+      <p>Punto: <strong id="point-name-sin-novedad"></strong></p>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin:10px 0;padding:10px;background:#1a1a1a;border-radius:8px;">
+        <span style="color:#aaa;">Tiempo transcurrido:</span>
+        <strong id="timer-sin-novedad" style="color:#42a5f5;font-size:1.2em;">00:00</strong>
+      </div>
+      <form id="form-sin-novedad">
+        <p style="font-size:0.9em;color:#aaa;margin:0 0 12px;">Se guardará con tu usuario de login</p>
+        <button type="submit" class="btn-submit btn btn-primary">Guardar Registro</button>
+        <button type="button" class="btn-cancel form-cancel btn">Cancelar</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Formulario CON NOVEDAD -->
+  <div id="form-con-novedad-container" class="modal-container" style="display:none;">
+    <div class="modal-content">
+      <h3>Registro Con Novedad</h3>
+      <p>Punto: <strong id="point-name-con-novedad"></strong></p>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin:10px 0;padding:10px;background:#1a1a1a;border-radius:8px;">
+        <span style="color:#aaa;">Tiempo transcurrido:</span>
+        <strong id="timer-con-novedad" style="color:#42a5f5;font-size:1.2em;">00:00</strong>
+      </div>
+      <form id="form-con-novedad">
+        <label style="font-size:0.85em;color:#aaa;display:block;margin-bottom:8px;">Usuario (no editable):</label>
+        <input type="text" id="agent-name-con-novedad" placeholder="Cargando nombre del usuario..." disabled style="background:#1a1a1a;opacity:0.7;cursor:not-allowed;" />
+        <textarea id="observation-text" placeholder="Describa la observación aquí..." rows="4" required></textarea>
+
+        <ol class="questions">
+          <li class="q-item">
+            <p class="q-text">¿El agente cuenta con todos sus EPPs reglamentarios, en buen estado y correctamente colocados durante toda su jornada?</p>
+            <div class="q-options">
+              <label><input type="radio" name="q1" value="SI"> SI</label>
+              <label><input type="radio" name="q1" value="NO"> NO</label>
+            </div>
+          </li>
+
+          <li class="q-item">
+            <p class="q-text">¿Conoce y aplica correctamente los procedimientos operativos establecidos para su puesto específico?</p>
+            <div class="q-options">
+              <label><input type="radio" name="q2" value="SI"> SI</label>
+              <label><input type="radio" name="q2" value="NO"> NO</label>
+            </div>
+          </li>
+
+          <li class="q-item">
+            <p class="q-text">¿Mantiene una actitud vigilante, postura adecuada y atención constante a su entorno?</p>
+            <div class="q-options">
+              <label><input type="radio" name="q3" value="SI"> SI</label>
+              <label><input type="radio" name="q3" value="NO"> NO</label>
+            </div>
+          </li>
+
+          <li class="q-item">
+            <p class="q-text">¿Registra y reporta oportunamente cualquier novedad, incidente o situación fuera de lo común?</p>
+            <div class="q-options">
+              <label><input type="radio" name="q4" value="SI"> SI</label>
+              <label><input type="radio" name="q4" value="NO"> NO</label>
+            </div>
+          </li>
+
+          <li class="q-item">
+            <p class="q-text">¿Cuenta con medios de comunicación operativos y responde de forma oportuna a llamados del supervisor o centro de control?</p>
+            <div class="q-options">
+              <label><input type="radio" name="q5" value="SI"> SI</label>
+              <label><input type="radio" name="q5" value="NO"> NO</label>
+            </div>
+          </li>
+
+          <li class="q-item">
+            <p class="q-text">¿Reportará algo inusual encontrado en el puesto?</p>
+            <div class="q-options">
+              <label><input type="radio" name="q6" value="SI"> SI</label>
+              <label><input type="radio" name="q6" value="NO"> NO</label>
+            </div>
+            <div class="q6-comment-wrap hidden">
+              <textarea id="q6-comment" rows="3" placeholder="Describe brevemente lo inusual..."></textarea>
+            </div>
+          </li>
+        </ol>
+
+        <!-- Evidencia -->
+        <div class="evidence-block">
+          <label class="evidence-title">Evidencia (opcional)</label>
+          <div class="evidence-actions">
+            <button type="button" id="btn-evidencia" class="btn btn-warn">TOMAR EVIDENCIA</button>
+          </div>
+          <div class="evidence-preview" id="evidence-preview-wrap" style="display:none;">
+            <img id="evidence-preview" alt="Vista previa evidencia" />
+            <button type="button" id="evidence-remove" class="btn">Quitar</button>
+          </div>
+        </div>
+
+        <button type="submit" class="btn-submit btn btn-primary">Aceptar y Guardar</button>
+        <button type="button" class="btn-cancel form-cancel btn">Cancelar</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="status-toast" class=""></div>
+
+  <!-- Overlay guardado -->
+  <div id="saving-overlay" aria-hidden="true">
+    <div class="so-backdrop"></div>
+    <div class="so-card" role="dialog" aria-live="polite" aria-busy="true">
+      <div class="so-spinner" aria-hidden="true"></div>
+      <div class="so-check" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="54" height="54" aria-hidden="true">
+          <path d="M20 6L9 17l-5-5" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </div>
+      <div id="saving-msg" class="so-msg">Guardando…</div>
+    </div>
+  </div>
+
+  <!-- Mensaje de cámara (INICIAR RONDAS + PLAY) -->
+  <div id="camera-permission-msg">
+    <div class="msg-box" role="dialog" aria-live="polite" aria-modal="true">
+      <h3>INICIAR RONDAS</h3>
+      <button id="start-scan-cta" class="btn-play" type="button" aria-label="Iniciar escáner QR">
+        <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true">
+          <path d="M8 5v14l11-7z" fill="currentColor"></path>
+        </svg>
+        <span>PLAY</span>
+      </button>
+      <p class="hint">Al tocar "PLAY" se solicitará el permiso de cámara.</p>
+      <button id="btn-cancel-rondas" type="button" style="display:block;width:100%;margin-top:12px;padding:12px 20px;border-radius:8px;border:1px solid #ddd;background:#fff;color:#111;font-weight:600;cursor:pointer;font-size:15px;">CANCELAR</button>
+    </div>
+  </div>
+
+  <!-- Modal de cámara para evidencia -->
+  <div id="camera-modal-evidencia" class="modal-container" style="display:none;">
+    <div class="modal-content" style="max-width:90vw;height:90vh;padding:10px;">
+      <h3>Capturar Evidencia</h3>
+      <video id="video-evidencia" playsinline style="width:100%;height:60vh;background:#000;border-radius:8px;object-fit:cover;margin:10px 0;"></video>
+      <canvas id="canvas-evidencia" hidden></canvas>
+      <div style="display:flex;gap:10px;margin:10px 0;">
+        <button type="button" id="btn-capture-photo" class="btn btn-primary" style="flex:1;">CAPTURAR</button>
+        <button type="button" id="btn-cancel-camera" class="btn btn-ghost" style="flex:1;">CANCELAR</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sheet de evidencia (Cámara / Galería) -->
+  <div id="sheet-evidencia" class="sheet hidden" role="dialog" aria-modal="true">
+    <div class="sheet-card">
+      <h3>Agregar evidencia</h3>
+      <button id="opt-cam" class="btn btn-primary">Abrir cámara</button>
+      <button id="opt-gal" class="btn">Adjuntar desde galería</button>
+      <button id="opt-cancelar" class="btn btn-ghost">Cancelar</button>
+    </div>
+  </div>
+
+  <!-- Input de galería oculto -->
+  <input id="evidence-input-gallery" type="file" accept="image/*" hidden />  <!-- Sheet de evidencia (Cámara / Galería) -->
+  <div id="sheet-evidencia" class="sheet hidden" role="dialog" aria-modal="true">
+    <div class="sheet-card">
+      <h3>Agregar evidencia</h3>
+      <button id="opt-cam" class="btn btn-primary">Abrir cámara</button>
+      <button id="opt-gal" class="btn">Adjuntar desde galería</button>
+      <button id="opt-cancelar" class="btn btn-ghost">Cancelar</button>
+    </div>
+  </div>
+
+  <!-- Input de galería adicional -->
+  <input id="evidence-input-gallery" type="file" accept="image/*" hidden />
+</body>
+</html>
